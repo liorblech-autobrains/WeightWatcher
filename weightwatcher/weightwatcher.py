@@ -22,18 +22,9 @@ import scipy as sp
 import matplotlib
 import matplotlib.pyplot as plt
 import powerlaw
- 
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras.models import load_model
 
 import torch
 import torch.nn as nn
-
-import onnx
-from onnx import numpy_helper
-
-import pyRMT
 
 import sklearn
 from sklearn.decomposition import TruncatedSVD
@@ -73,42 +64,7 @@ def main():
     """
     Weight Watcher
     """
-    print("WeightWatcher command line support coming later. https://calculationconsulting.com")
-
-
-class ONNXLayer:
-    """Helper class to support ONNX layers
-    
-    Turns out the op_type is option, so we have to 
-    infers the layer_ type from the dimension of the weights 
-        [a,b,c,d]  ->  CONV2D 
-        [a,b]  ->  DENSE 
-                
-    """
-    
-    def __init__(self, model, inode, node):
-        self.model = model
-        self.node = node
-        self.layer_id = inode
-        self.name = node.name
-        self.dims = node.dims
-        self.the_type = LAYER_TYPE.UNKNOWN
-
-        if len(self.dims) == 4:
-            self.the_type = LAYER_TYPE.CONV2D
-        elif len(self.dims) == 2:
-            self.the_type = LAYER_TYPE.DENSE
-        else:
-            logger.debug("Unsupported ONNX Layer, dims = {}".format(self.dims))
-            
-    def get_weights(self):
-        return numpy_helper.to_array(self.node) 
-    
-    def set_weights(self, idx, W):
-        T = numpy_helper.from_array(W)
-        self.model.graph.initializer[idx].CopyFrom(T)
-
-        
+    print("WeightWatcher command line support coming later. https://calculationconsulting.com")  
         
 class WWLayer:
     """WW wrapper layer to Keras and PyTorch Layer layer objects
@@ -229,29 +185,9 @@ class WWLayer:
         the_type = LAYER_TYPE.UNKNOWN
        
         typestr = (str(type(layer))).lower()
-            
-        # Keras TF 2.x types
-        if isinstance(layer, keras.layers.Dense): 
-            the_type = LAYER_TYPE.DENSE
-            
-        elif isinstance(layer, keras.layers.Conv1D):                
-            the_type = LAYER_TYPE.CONV1D
         
-        elif isinstance(layer, keras.layers.Conv2D):                
-            the_type = LAYER_TYPE.CONV2D
-            
-        elif isinstance(layer, keras.layers.Flatten):
-            the_type = LAYER_TYPE.FLATTENED
-            
-        elif isinstance(layer, keras.layers.Embedding):
-            the_type = LAYER_TYPE.EMBEDDING
-            
-        elif isinstance(layer, tf.keras.layers.LayerNormalization):
-            the_type = LAYER_TYPE.NORM
-        
-        # PyTorch        
-             
-        elif isinstance(layer, nn.Linear):
+        # PyTorch           
+        if isinstance(layer, nn.Linear):
             the_type = LAYER_TYPE.DENSE
             
         elif isinstance(layer, nn.Conv1d):
@@ -265,25 +201,6 @@ class WWLayer:
                 
         elif isinstance(layer, nn.LayerNorm):
             the_type = LAYER_TYPE.NORM
-
-        # ONNX
-        elif isinstance(layer,ONNXLayer):
-            the_type = layer.the_type
-
-        # allow user to specify model type with file mapping
-        
-        # try to infer type (i.e for huggingface)
-        elif typestr.endswith(".linear'>"):
-            the_type = LAYER_TYPE.DENSE
-            
-        elif typestr.endswith(".dense'>"):
-            the_type = LAYER_TYPE.DENSE
-            
-        elif typestr.endswith(".conv1d'>"):
-            the_type = LAYER_TYPE.CONV1D
-            
-        elif typestr.endswith(".conv2d'>"):
-            the_type = LAYER_TYPE.CONV2D
         
         return the_type
     
@@ -608,15 +525,7 @@ class ModelIterator:
     def set_framework(self):
         """infer the framework """
         
-        framework = FRAMEWORK.UNKNOWN
-        if hasattr(self.model, LAYERS):
-            framework = FRAMEWORK.KERAS
-
-        elif hasattr(self.model, 'modules'):
-            framework = FRAMEWORK.PYTORCH
-
-        elif isinstance(self.model, onnx.onnx_ml_pb2.ModelProto):  
-            framework = FRAMEWORK.ONNX
+        framework = FRAMEWORK.PYTORCH
         return framework
     
     def __iter__(self):
@@ -640,40 +549,10 @@ class ModelIterator:
         Also detects the framework being used. 
         Used by base class and child classes to iterate over the framework layers """
         layer_iter = None
-        
-        if self.framework == FRAMEWORK.KERAS:
-            def layer_iter_():
-
-                def traverse_(layer):
-                    "not recursive, just iterate over all submodules if present"
-                    if not hasattr(layer, 'submodules') or len(layer.submodules)==0:
-                        yield layer
-                    else:                        
-                        for sublayer in layer.submodules:
-                            yield sublayer
-                    
-                for layer in model.layers:
-                    yield from traverse_(layer)
-
-            layer_iter = layer_iter_()
-
-
-        elif self.framework == FRAMEWORK.PYTORCH:
-            def layer_iter_():
-                for layer in model.modules():
-                        yield layer                        
-            layer_iter = layer_iter_()    
-            
-
-        elif self.framework == FRAMEWORK.ONNX:
-            def layer_iter_():
-                for inode, node in enumerate(model.graph.initializer):
-                    yield ONNXLayer(model, inode, node)                        
-            layer_iter = layer_iter_()    
-            
-        else:
-            layer_iter = None
-            
+        def layer_iter_():
+            for layer in model.modules():
+                    yield layer                        
+        layer_iter = layer_iter_()      
         return layer_iter
                       
     def make_layer_iter_(self):
@@ -1079,11 +958,11 @@ class WWStackedLayerIterator(WWLayerIterator):
     
 class WeightWatcher(object):
 
-    def __init__(self, model=None, log_level=None):
+    def __init__(self, model, log_level=None):
         if log_level:
             logger.setLevel(log_level)
 
-        self.model = self.load_model(model)
+        self.model = model
         self.details = None
         logger.info(self.banner())
 
@@ -1097,26 +976,12 @@ class WeightWatcher(object):
     def banner(self):
         versions = "\npython      version {}".format(sys.version)
         versions += "\nnumpy       version {}".format(np.__version__)
-        versions += "\ntensforflow version {}".format(tf.__version__)
-        versions += "\nkeras       version {}".format(tf.keras.__version__)
         return "\n{}{}".format(self.header(), versions)
 
     def __repr__(self):
         done = bool(self.results)
         txt = "\nAnalysis done: {}".format(done)
         return "{}{}".format(self.header(), txt)
-            
-    # TODO: get rid of this or extend to be more generally useful
-    def load_model(self, model):
-        """load the model from a file, only works for keras right now"""
-        res = model
-        if isinstance(model, str):
-            if os.path.isfile(model):
-                logger.info("Loading model from file '{}'".format(model))
-                res = load_model(model)
-            else:
-                logger.error("Loading model from file '{}': file not found".format(model))
-        return res
     
     # TODO: implement
     def same_models(self, model_1, model_2):
@@ -2926,30 +2791,12 @@ class WeightWatcher(object):
         
         
         """
-        
-        if framework==FRAMEWORK.KERAS:
-            # (I think) this works for Dense and Conv2D, not sure about other layers
-            if B is not None:
-                W = [W, B]     
-            layer.set_weights(W)
             
-        elif framework==FRAMEWORK.PYTORCH:
-            # see: https://discuss.pytorch.org/t/fix-bias-and-weights-of-a-layer/75120/4
-            # this may be deprecated
-            layer.weight.data = torch.from_numpy(W)
-            if B is not None:
-                layer.bias.data = torch.from_numpy(B)
-                
-        # See; https://github.com/onnx/onnx/issues/2978
-        elif framework==FRAMEWORK.ONNX:
-            #if B is not None:
-            #    W = [W, B]   
-            #else:
-            #    W = [W]
-            layer.set_weights(idx, W)
-   
-        else:
-            logger.debug("Layer {} skipped, Layer Type {} not supported".format(layer_id, the_type))
+        # see: https://discuss.pytorch.org/t/fix-bias-and-weights-of-a-layer/75120/4
+        # this may be deprecated
+        layer.weight.data = torch.from_numpy(W)
+        if B is not None:
+            layer.bias.data = torch.from_numpy(B)
 
         return
    
